@@ -8,31 +8,23 @@ import SummaryPanel from '../components/SummaryPanel'
 import StatsBar from '../components/StatsBar'
 
 export default function App() {
-  const [title, setTitle]           = useState(`Meeting ${new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}`)
-  const [sessionId, setSessionId]   = useState(null)
-  const [chunks, setChunks]         = useState([])
-  const [elapsed, setElapsed]       = useState(0)
-  const timerRef                    = useRef(null)
+  const [title, setTitle]         = useState(`Meeting ${new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}`)
+  const [sessionId, setSessionId] = useState(null)
+  const [chunks, setChunks]       = useState([])
+  const [elapsed, setElapsed]     = useState(0)
+  const timerRef                  = useRef(null)
 
-  const { status, error, hasMic, hasScreen, start, stop, wsRef } = useAudioCapture()
+  // onChunk callback — stable ref so hook doesn't re-create
+  const onChunk = useCallback((chunk) => {
+    setChunks(prev => [chunk, ...prev].slice(0, 500))
+  }, [])
+
+  const onError = useCallback((msg) => {
+    console.error('WS error:', msg)
+  }, [])
+
+  const { status, error, hasMic, hasScreen, start, stop } = useAudioCapture({ onChunk, onError })
   const isCapturing = status === 'capturing'
-
-  // Attach WebSocket message handler
-  useEffect(() => {
-    const poll = setInterval(() => {
-      const ws = wsRef.current
-      if (!ws) return
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data)
-          if (msg.type === 'chunk' && msg.chunk?.text) {
-            setChunks(prev => [msg.chunk, ...prev].slice(0, 500))
-          }
-        } catch (_) {}
-      }
-    }, 100)
-    return () => clearInterval(poll)
-  }, [wsRef])
 
   // Elapsed timer
   useEffect(() => {
@@ -45,7 +37,6 @@ export default function App() {
   }, [isCapturing])
 
   const handleStart = useCallback(async ({ withScreen }) => {
-    // Create backend session
     const sess = await api.createSession(title)
     setSessionId(sess.session_id)
     setChunks([])
@@ -53,22 +44,18 @@ export default function App() {
     await start(sess.session_id, { withScreen })
   }, [title, start])
 
-  const handleStop = useCallback(() => {
-    stop()
-  }, [stop])
+  const handleStop = useCallback(() => stop(), [stop])
 
   return (
     <div className="min-h-screen bg-navy-950 text-slate-100 font-sans">
       <Topbar title={title} onTitleChange={setTitle} isCapturing={isCapturing} />
 
       <div className="max-w-7xl mx-auto px-4 pb-12">
-        {/* Stats */}
         {(isCapturing || chunks.length > 0) && (
           <StatsBar chunks={chunks} elapsed={elapsed} />
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Left column */}
           <div className="lg:col-span-1 flex flex-col gap-4">
             <RecordPanel
               status={status}
@@ -82,13 +69,11 @@ export default function App() {
             <SummaryPanel sessionId={sessionId} chunks={chunks} />
           </div>
 
-          {/* Right column */}
           <div className="lg:col-span-2" style={{ minHeight: '70vh' }}>
-            {chunks.length === 0 && !isCapturing ? (
-              <WelcomeCard />
-            ) : (
-              <TranscriptPanel chunks={chunks} />
-            )}
+            {chunks.length === 0 && !isCapturing
+              ? <WelcomeCard />
+              : <TranscriptPanel chunks={chunks} />
+            }
           </div>
         </div>
       </div>
@@ -109,7 +94,7 @@ function WelcomeCard() {
       <div className="grid grid-cols-3 gap-4 text-left w-full max-w-md">
         {[
           { icon: '🎤', title: 'Your Mic', desc: 'Captures your own voice in real-time.' },
-          { icon: '🖥', title: 'Screen Audio', desc: 'Google Meet, Zoom, Teams — all captured via screen share.' },
+          { icon: '🖥', title: 'Screen Audio', desc: 'Google Meet, Zoom, Teams — captured via screen share.' },
           { icon: '🌐', title: 'Translate', desc: 'Hindi & Bengali auto-translated to English.' },
         ].map(({ icon, title, desc }) => (
           <div key={title} className="bg-navy-700 border border-navy-600 rounded-xl p-3">
