@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { font-family: 'Sora', sans-serif; }
+  body {
+    @apply bg-navy-950 text-slate-100 antialiased;
+    font-family: 'Sora', sans-serif;
+  }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { @apply bg-navy-800; }
+  ::-webkit-scrollbar-thumb { @apply bg-navy-600 rounded-full; }
+}
+
+@layer components {
+  .card {
+    @apply bg-navy-800 border border-navy-600 rounded-2xl;
+  }
+  .btn {
+    @apply px-4 py-2 rounded-xl font-semibold text-sm transition-all duration-150
+           border border-navy-600 bg-navy-800 text-slate-200
+           hover:border-accent hover:bg-navy-700 hover:-translate-y-px;
+  }
+  .btn-primary {
+    @apply px-4 py-2 rounded-xl font-semibold text-sm transition-all duration-150
+           bg-accent text-white border-none
+           hover:bg-accent-hover shadow-lg shadow-accent/20;
+  }
+  .btn-danger {
+    @apply px-4 py-2 rounded-xl font-semibold text-sm transition-all duration-150
+           bg-red-500/10 text-red-400 border border-red-500/30
+           hover:bg-red-500/20;
+  }
+  .section-header {
+    @apply text-xs font-bold uppercase tracking-widest text-slate-500
+           border-b border-navy-600 pb-2 mb-3;
+  }
+  .chunk-card {
+    @apply bg-navy-800 border border-navy-600 border-l-2 border-l-accent
+           rounded-r-xl px-3 py-2 mb-2 text-sm
+           hover:border-l-emerald-400 transition-colors duration-150;
+  }
+}
