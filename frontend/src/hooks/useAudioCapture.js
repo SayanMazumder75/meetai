@@ -1,14 +1,17 @@
 /**
- * useAudioCapture.js — FIXED
- * WS opened first, onmessage attached immediately after open.
- * No polling race condition.
+ * useAudioCapture.js — Fully corrected
+ * - Raw PCM audio (Float32Array) sent over WebSocket
+ * - No ScriptProcessorNode packing errors
+ * - AudioContext resumed explicitly
+ * - Buffer overflow protection
  */
 
 import { useRef, useState, useCallback } from 'react'
 import { api } from '../utils/api'
 
-const CHUNK_MS    = 3000
-const SAMPLE_RATE = 16000
+const CHUNK_MS    = 3000      // send every 3 seconds
+const SAMPLE_RATE = 16000     // 16 kHz mono
+const TARGET_SAMPLES = SAMPLE_RATE * (CHUNK_MS / 1000)  // 48000 samples
 
 export function useAudioCapture({ onChunk, onError } = {}) {
   const [status, setStatus]       = useState('idle')
@@ -21,10 +24,10 @@ export function useAudioCapture({ onChunk, onError } = {}) {
   const processorRef    = useRef(null)
   const micStreamRef    = useRef(null)
   const screenStreamRef = useRef(null)
-  const bufferRef       = useRef([])
-  const samplesRef      = useRef(0)
-  const targetSamples   = SAMPLE_RATE * (CHUNK_MS / 1000)
+  const bufferRef       = useRef([])      // accumulated Float32Array chunks
+  const samplesRef      = useRef(0)       // total samples in buffer
 
+  // Cleanup all resources
   const _cleanup = useCallback(() => {
     try { processorRef.current?.disconnect() } catch (_) {}
     try { ctxRef.current?.close() } catch (_) {}
@@ -43,36 +46,49 @@ export function useAudioCapture({ onChunk, onError } = {}) {
     setStatus('capturing')
 
     try {
-      // 1. Mic
+      // 1. Get microphone stream
       const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount:1, sampleRate:SAMPLE_RATE, echoCancellation:true, noiseSuppression:true, autoGainControl:true },
+        audio: {
+          channelCount: 1,
+          sampleRate: SAMPLE_RATE,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
         video: false,
       })
       micStreamRef.current = micStream
       setHasMic(true)
 
-      // 2. Screen (optional)
+      // 2. Optional screen share (audio only)
       let screenStream = null
       if (withScreen) {
         try {
-          screenStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:{ channelCount:1 } })
+          screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: { channelCount: 1 }
+          })
+          // We don't need video, stop those tracks
           screenStream.getVideoTracks().forEach(t => t.stop())
           screenStreamRef.current = screenStream
           setHasScreen(true)
-        } catch (e) { console.warn('Screen share declined:', e.message) }
+        } catch (e) {
+          console.warn('Screen share declined:', e.message)
+        }
       }
 
-      // 3. Open WebSocket FIRST — attach onmessage immediately
+      // 3. Open WebSocket FIRST and attach onmessage immediately
       const ws = new WebSocket(api.wsUrl(sessionId))
       ws.binaryType = 'arraybuffer'
       wsRef.current = ws
 
       await new Promise((resolve, reject) => {
-        ws.onopen  = resolve
-        ws.onerror = () => reject(new Error('WebSocket failed to connect. Check backend URL.'))
-        setTimeout(() => reject(new Error('WebSocket timed out (10s)')), 10000)
+        ws.onopen = resolve
+        ws.onerror = () => reject(new Error('WebSocket connection failed'))
+        setTimeout(() => reject(new Error('WebSocket timeout (10s)')), 10000)
       })
 
+      // Set up message handler
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
@@ -81,32 +97,38 @@ export function useAudioCapture({ onChunk, onError } = {}) {
           } else if (msg.type === 'error') {
             onError?.(msg.message)
           }
-        } catch (_) {}
+        } catch (err) {
+          console.warn('Failed to parse WebSocket message', err)
+        }
       }
 
       ws.onclose = () => {
-        setStatus(s => s === 'capturing' ? 'idle' : s)
+        setStatus(s => (s === 'capturing' ? 'idle' : s))
         setHasMic(false)
         setHasScreen(false)
+        _cleanup()
       }
 
       ws.onerror = () => {
-        setError('WebSocket disconnected unexpectedly')
+        setError('WebSocket error')
         setStatus('error')
+        _cleanup()
       }
 
-      // 4. AudioContext — merge mic + screen
+      // 4. Create AudioContext and merge mic + screen
       const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
       ctxRef.current = ctx
 
       const dest = ctx.createMediaStreamDestination()
 
+      // Microphone source
       const micSrc = ctx.createMediaStreamSource(micStream)
       const micGain = ctx.createGain()
       micGain.gain.value = 1.0
       micSrc.connect(micGain)
       micGain.connect(dest)
 
+      // Screen audio source (if available)
       if (screenStream?.getAudioTracks().length > 0) {
         const scrSrc = ctx.createMediaStreamSource(screenStream)
         const scrGain = ctx.createGain()
@@ -115,33 +137,49 @@ export function useAudioCapture({ onChunk, onError } = {}) {
         scrGain.connect(dest)
       }
 
-      // 5. ScriptProcessor → collect PCM → send every CHUNK_MS
+      // 5. ScriptProcessorNode (deprecated but works) to collect audio
       const processor = ctx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
 
       processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0)
-        bufferRef.current.push(new Float32Array(input))
+        const input = e.inputBuffer.getChannelData(0) // Float32Array
+        bufferRef.current.push(input)
         samplesRef.current += input.length
 
-        if (samplesRef.current >= targetSamples) {
+        // Send when we have accumulated enough samples
+        if (samplesRef.current >= TARGET_SAMPLES && wsRef.current?.readyState === WebSocket.OPEN) {
+          // Flatten buffer into one Float32Array
           const flat = new Float32Array(samplesRef.current)
-          let off = 0
-          for (const c of bufferRef.current) { flat.set(c, off); off += c.length }
+          let offset = 0
+          for (const chunk of bufferRef.current) {
+            flat.set(chunk, offset)
+            offset += chunk.length
+          }
+          // Send raw PCM bytes
+          wsRef.current.send(flat.buffer)
+
+          // Reset buffer
           bufferRef.current = []
           samplesRef.current = 0
+        }
 
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(flat.buffer)
-          }
+        // Safety: prevent unbounded buffer growth if WebSocket is closed
+        if (wsRef.current?.readyState !== WebSocket.OPEN && samplesRef.current > TARGET_SAMPLES * 10) {
+          bufferRef.current = []
+          samplesRef.current = 0
         }
       }
 
+      // Connect processor to the merged stream
       const destSrc = ctx.createMediaStreamSource(dest.stream)
       destSrc.connect(processor)
       processor.connect(ctx.destination)
 
+      // 6. IMPORTANT: Resume AudioContext (required on many browsers)
+      await ctx.resume()
+
     } catch (err) {
+      console.error('Failed to start capture:', err)
       setError(err.message)
       setStatus('error')
       _cleanup()
