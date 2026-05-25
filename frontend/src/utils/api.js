@@ -1,42 +1,34 @@
-// All API calls to backend
-// Set VITE_API_URL in your Vercel env vars to your Render backend URL
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const WS_BASE = BASE.replace(/^http/, 'ws')
+// utils/api.js – NO PACKING, just raw WebSocket and fetch
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 export const api = {
-  async createSession(title = '') {
-    const res = await fetch(`${BASE}/sessions`, {
+  // REST endpoints
+  async createSession(title) {
+    const res = await fetch(`${BACKEND_URL}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
-    })
-    return res.json()
+    });
+    return res.json();
   },
 
-  async listSessions() {
-    const res = await fetch(`${BASE}/sessions`)
-    return res.json()
+  async summarizeSession(sessionId) {
+    const res = await fetch(`${BACKEND_URL}/sessions/${sessionId}/summarize`, {
+      method: 'POST',
+    });
+    return res.json();
   },
 
-  async getSession(id) {
-    const res = await fetch(`${BASE}/sessions/${id}`)
-    return res.json()
+  exportUrl(sessionId) {
+    return `${BACKEND_URL}/sessions/${sessionId}/export`;
   },
 
-  async summarizeSession(id) {
-    const res = await fetch(`${BASE}/sessions/${id}/summarize`, { method: 'POST' })
-    return res.json()
-  },
-
-  async deleteSession(id) {
-    await fetch(`${BASE}/sessions/${id}`, { method: 'DELETE' })
-  },
-
-  exportUrl(id) {
-    return `${BASE}/sessions/${id}/export`
-  },
-
+  // WebSocket – returns a clean, unwrapped WebSocket
   wsUrl(sessionId) {
-    return `${WS_BASE}/ws/${sessionId}`
-  },
-}
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Assumes backend is on same host (or use env var)
+    const backendHost = BACKEND_URL.replace(/^https?:\/\//, '');
+    return `${wsProtocol}//${backendHost}/ws/${sessionId}`;
+  }
+};
